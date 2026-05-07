@@ -9,3 +9,5 @@ sentence-transformers
 tf-keras
 python-dotenv
 httpx
+PyJWT
+email-validator

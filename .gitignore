@@ -4,5 +4,6 @@ backend/**/*.pyc
 frontend/node_modules/
 frontend/.next/
 frontend/.env.local
+backend/storage/
 .pytest_cache/
 __pycache__/

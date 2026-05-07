@@ -18,14 +18,14 @@ class IngestDocumentUseCase:
         self.embedding_service = embedding_service
         self.vector_store = vector_store
 
-    async def execute(self, file: UploadFile) -> dict[str, str]:
+    async def execute(self, file: UploadFile, index_document_id: str | None = None) -> dict[str, str]:
         if not file.filename:
             raise ValueError("File name is required.")
 
         self.document_processing_service.validate_extension(file.filename)
         raw_content = await file.read()
 
-        document_id = str(uuid.uuid4())
+        document_id = index_document_id or str(uuid.uuid4())
         chunks = await self.document_processing_service.process(
             document_id=document_id,
             filename=file.filename,

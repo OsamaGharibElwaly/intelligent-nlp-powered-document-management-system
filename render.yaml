@@ -1,0 +1,23 @@
+services:
+  - type: web
+    name: rag-document-assistant-backend
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /health
+    envVars:
+      - key: GROQ_API_KEY
+        sync: false
+      - key: GROQ_MODEL
+        value: llama-3.1-8b-instant
+      - key: GROQ_BASE_URL
+        value: https://api.groq.com/openai/v1
+      - key: JWT_SECRET
+        sync: false
+      - key: TOKEN_EXPIRY
+        value: "60"
+      - key: STORAGE_PATH
+        value: storage
+      - key: ALLOWED_ORIGINS
+        sync: false
