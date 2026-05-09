@@ -5,7 +5,7 @@ frontend/node_modules/
 frontend/.next/
 frontend/.env.local
 backend/storage/
-storage/
+/storage/
 frontend/tsconfig.tsbuildinfo
 .pytest_cache/
 __pycache__/
