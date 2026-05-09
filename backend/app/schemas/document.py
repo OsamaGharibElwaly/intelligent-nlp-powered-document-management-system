@@ -24,6 +24,7 @@ class TodoItemResponse(BaseModel):
 class DocumentMetadataResponse(BaseModel):
     document_id: str
     owner_id: str
+    workspace_id: str | None = None
     collection_id: str
     filename: str
     active_version: int

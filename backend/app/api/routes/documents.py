@@ -7,8 +7,10 @@ from app.dependencies import audit_service
 from app.dependencies import document_activity_store
 from app.dependencies import document_repository
 from app.dependencies import ingest_document_use_case
+from app.dependencies import notification_store
 from app.dependencies import quota_service
 from app.dependencies import storage_service
+from app.dependencies import workspace_store
 from app.schemas.document import DocumentMetadataResponse, MetadataUpdateRequest
 from app.schemas.document_storage import (
     DOCUMENT_ACTIVITY_TYPES,
@@ -19,8 +21,20 @@ from app.schemas.document_storage import (
     TodoPatchRequest,
 )
 from app.services.document_storage_filters import apply_storage_filters, sort_documents
+from app.services.notification_emitter import notify_document_updated, notify_reindexed
 
 router = APIRouter(prefix="/documents", tags=["documents"])
+
+
+def _notify_document_updated(*, user: dict[str, object], document_id: str, summary: str) -> None:
+    notify_document_updated(
+        notification_store=notification_store,
+        document_repository=document_repository,
+        workspace_store=workspace_store,
+        actor_email=str(user["sub"]),
+        document_id=document_id,
+        summary=summary,
+    )
 
 
 def _maybe_activity_marked_completed(
@@ -152,7 +166,7 @@ async def create_new_version(
     file: UploadFile = File(...),
 ) -> DocumentMetadataResponse:
     try:
-        document_repository.assert_access(user=user, document_id=document_id)
+        document_repository.assert_owner_or_admin(user=user, document_id=document_id)
         content = await file.read()
         quota_service.assert_upload_allowed(user=user, file_size=len(content))
         doc = document_repository.get(document_id)
@@ -185,6 +199,14 @@ async def create_new_version(
             details={"new_version": int(updated.get("active_version", 0))},
         )
         quota_service.record_upload(user=user, file_size=len(content))
+        notify_reindexed(
+            notification_store=notification_store,
+            document_repository=document_repository,
+            workspace_store=workspace_store,
+            actor_email=str(user["sub"]),
+            document_id=document_id,
+            context=f"New version indexed · v{int(updated.get('active_version', 0))} · {file.filename or 'document'}",
+        )
         return DocumentMetadataResponse.model_validate(updated)
     except ValueError as exc:
         message = str(exc).lower()
@@ -198,7 +220,7 @@ async def soft_delete_document(
     user: Annotated[dict[str, object], Depends(require_roles({"admin", "user"}))],
 ) -> DocumentMetadataResponse:
     try:
-        document_repository.assert_access(user=user, document_id=document_id)
+        document_repository.assert_owner_or_admin(user=user, document_id=document_id)
         document_repository.soft_delete(document_id=document_id)
         doc = document_repository.get(document_id)
         if doc is None:
@@ -210,6 +232,7 @@ async def soft_delete_document(
             document_id=document_id,
             details={"soft_delete": True},
         )
+        _notify_document_updated(user=user, document_id=document_id, summary="Document moved to trash.")
         return DocumentMetadataResponse.model_validate(doc)
     except ValueError as exc:
         message = str(exc).lower()
@@ -233,6 +256,7 @@ async def restore_document(
             document_id=document_id,
             details={"restored_version": int(updated.get("active_version", 1))},
         )
+        _notify_document_updated(user=user, document_id=document_id, summary="Document restored from trash.")
         return DocumentMetadataResponse.model_validate(updated)
     except ValueError as exc:
         message = str(exc).lower()
@@ -266,6 +290,7 @@ async def update_document_metadata(
             document_id=document_id,
             details={"tags_updated": payload.tags is not None, "metadata_updated": payload.metadata is not None},
         )
+        _notify_document_updated(user=user, document_id=document_id, summary="Metadata or tags were updated.")
         return DocumentMetadataResponse.model_validate(updated)
     except ValueError as exc:
         message = str(exc).lower()
@@ -315,6 +340,7 @@ async def patch_document_state(
             document_id=document_id,
             details={"patch": payload.model_dump(exclude_none=True)},
         )
+        _notify_document_updated(user=user, document_id=document_id, summary="Document lifecycle or organization fields changed.")
         return DocumentMetadataResponse.model_validate(updated)
     except ValueError as exc:
         message = str(exc).lower()
@@ -416,6 +442,7 @@ async def create_document_todo(
             document_id=document_id,
             details={"title": payload.title[:120]},
         )
+        _notify_document_updated(user=user, document_id=document_id, summary=f"New todo · {payload.title[:120]}")
         return DocumentMetadataResponse.model_validate(updated)
     except ValueError as exc:
         message = str(exc).lower()
@@ -457,6 +484,7 @@ async def patch_document_todo(
             document_id=document_id,
             details={"todo_id": todo_id, "patch": payload.model_dump(exclude_none=True)},
         )
+        _notify_document_updated(user=user, document_id=document_id, summary="Todo updated.")
         return DocumentMetadataResponse.model_validate(updated)
     except ValueError as exc:
         message = str(exc).lower()
@@ -490,6 +518,7 @@ async def delete_document_todo(
             document_id=document_id,
             details={"todo_id": todo_id},
         )
+        _notify_document_updated(user=user, document_id=document_id, summary="Todo removed.")
         return DocumentMetadataResponse.model_validate(updated)
     except ValueError as exc:
         message = str(exc).lower()

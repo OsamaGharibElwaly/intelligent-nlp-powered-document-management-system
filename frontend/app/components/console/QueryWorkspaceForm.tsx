@@ -19,6 +19,8 @@ type Props = {
   canQuery: boolean;
   isQuerying: boolean;
   statusLine?: string;
+  persistThread: boolean;
+  onPersistThreadChange: (v: boolean) => void;
 };
 
 const SUGGESTIONS = [
@@ -55,6 +57,8 @@ export function QueryWorkspaceForm({
   canQuery,
   isQuerying,
   statusLine = "",
+  persistThread,
+  onPersistThreadChange,
 }: Props) {
   const lenSlider = sliderFromLength(answerLength);
 
@@ -178,6 +182,15 @@ export function QueryWorkspaceForm({
           />
         </div>
       </div>
+      <label style={{ display: "flex", gap: "0.45rem", alignItems: "center", fontSize: "0.78rem", opacity: 0.88 }}>
+        <input
+          type="checkbox"
+          checked={persistThread}
+          onChange={(e) => onPersistThreadChange(e.target.checked)}
+          data-testid="query-persist-thread-checkbox"
+        />
+        Save as shared query thread (team)
+      </label>
       <button
         data-testid="query-button"
         type="submit"

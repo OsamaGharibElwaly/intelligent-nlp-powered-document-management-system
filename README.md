@@ -37,7 +37,9 @@ flowchart LR
   - `GET/PATCH /documents...` (list, metadata, versions, soft-delete/restore)
   - `POST /retrieve`, `POST /query`, `POST /answer`
   - `POST /feedback`
-  - `GET /audit/...` (usage/history where enabled)
+  - `GET /audit/...` (usage/history, observability summaries/export, error intelligence where enabled)
+  - `GET/POST /collaboration/...` (workspaces, threads, comments — Phase 4)
+  - `GET/PATCH/POST /notifications/...` (Phase 4)
 
 ### Container: Backend (`backend/`)
 - FastAPI runtime that orchestrates ingestion, scoped retrieval, grounded answer generation (JSON paragraphs + citations), explainability, audit, and feedback-driven learning signals.
@@ -233,7 +235,35 @@ Phase 2 turns retrieval + answering into a **single grounded pipeline** with **e
 
 ---
 
-## 7) Tech Stack
+## 7) Phase 3 — System Management & Observability (`specs/3`)
+
+Phase 3 adds **admin-facing observability**, **structured error intelligence**, and **clearer operational UX** without breaking core RAG contracts.
+
+| Sub-phase | What was implemented |
+|-----------|-------------------------|
+| **3.1** | Admin **Command Center** UX (`AdminCommandCenter`, dashboard/overview surfaces); wiring to audit/metrics APIs where exposed |
+| **3.2** | **Fault-tolerant** client behaviour (`fetchWithRetry`, guarded query UX phases); backend resilience hooks on the RAG pipeline without silent failures |
+| **3.3** | **`ErrorIntelligenceStore`** (`error_intelligence.log`); classification-ready records from global handlers; **admin listing/filters** via audit routes |
+| **3.4** | **`ObservabilityMetricsStore`** — append-only query/retrieve metric rows, **range summaries**, optional **CSV export**; **`ObservabilityMetricsPanel`** in the admin UI |
+
+**Specs:** [`specs/3/`](specs/3/).
+
+---
+
+## 8) Phase 4 — Collaboration & Notifications (`specs/4`)
+
+Phase 4 turns the product into a **multi-user workspace** with **shared documents**, **query threads**, **comments**, and **per-user notifications** (RBAC-safe, pipeline-preserving).
+
+| Sub-phase | What was implemented |
+|-----------|-------------------------|
+| **4.1** | **`WorkspaceStore`** (owner / editor / viewer); **`DocumentRepository`** `workspace_id` + scoped `list_for_user` / `assert_access`; **`/collaboration/*`** (workspaces, threads, discussion, comments); **persisted threads** with `workspace_id` on `/query`; frontend **workspace scope**, **team panel**, **thread + comments** UI |
+| **4.2** | **`NotificationStore`** (per-user, read/unread); **`notification_emitter`** (document updates, re-index, AI answer, query failure, comments); **`/notifications`** API; navbar **bell**, dropdown, **`/notifications`** page; **deep links** to query/documents; emitter **guarded** so notification IO cannot break primary flows; viewer **upload** aligned with API in UI |
+
+**Specs:** [`specs/4/`](specs/4/).
+
+---
+
+## 9) Tech Stack
 
 - **Backend**: FastAPI, Python
 - **Embeddings**: SentenceTransformers (`all-MiniLM-L6-v2`)
@@ -242,7 +272,7 @@ Phase 2 turns retrieval + answering into a **single grounded pipeline** with **e
 - **Frontend**: Next.js + React + Three.js
 - **Testing**: Pytest
 
-## 8) How to Run
+## 10) How to Run
 
 ### Prerequisites
 - Python 3.11+
@@ -306,7 +336,7 @@ pytest ../tests/test_phase2_e2e_integration.py ../tests/test_phase9_evaluation.p
 
 ### 🔐 Authentication & Role Management
 - [ ] Improve Login/Register UI with modern UX (validation, animations, error states)
-- [ ] Add full Role-Based Access Control (RBAC)
+- [x] **Workspace-level RBAC** (owner / editor / viewer) + document/query/comment guards *(Phase 4)*
 - [ ] Replace dev bootstrap system with secure admin invitation flow
 - [ ] Add password reset and email verification (optional)
 
@@ -320,11 +350,18 @@ pytest ../tests/test_phase2_e2e_integration.py ../tests/test_phase9_evaluation.p
 
 ---
 
-### 📊 System Monitoring (Phase 3 UX)
-- [ ] Real-time analytics dashboard (queries, storage, token usage)
-- [ ] System health indicators (latency, failures, uptime)
-- [ ] Live activity feed (queries, uploads, AI responses)
-- [ ] Error monitoring and classification panel
+### 📊 System Monitoring & observability (Phase 3 — baseline shipped)
+- [x] **Metrics engine** — per-request observability events for `/query`, `/answer`, `/retrieve`; summaries & CSV export (audit routes + `ObservabilityMetricsStore`)
+- [x] **Admin metrics UI** — `ObservabilityMetricsPanel` integrated with Command Center
+- [x] **Error intelligence** — structured capture + admin listing (`ErrorIntelligenceStore`, audit routes)
+- [ ] Full SaaS-style **live** analytics (streaming dashboards, token/cost accounting UI)
+
+---
+
+### 👥 Collaboration & notifications (Phase 4 — shipped)
+- [x] **Shared workspaces** — create/list/members; uploads targeting `workspace_id`
+- [x] **Shared documents & threads** — scoped listing/access; persisted query threads + discussion/comments
+- [x] **In-app notifications** — bell, unread badge, `/notifications`, event-driven writes; failure-safe emitter
 
 ---
 
@@ -334,10 +371,10 @@ pytest ../tests/test_phase2_e2e_integration.py ../tests/test_phase9_evaluation.p
 - [ ] Advanced loading skeletons and micro-interactions
 - [ ] Dark mode support (optional)
 
-## 9) Key Design Principles
+## 11) Key Design Principles
 
 - **Deterministic behavior**: consistent embeddings/retrieval for same input.
 - **Modular architecture**: isolated services and use-cases.
 - **Grounded responses**: answer generation constrained to retrieved context.
 - **Separation of concerns**: API, processing, retrieval, prompting, LLM separated.
-- **Spec-driven development**: Phase 1 (`specs/1`) and Phase 2 (`specs/2`) are implemented end-to-end; see diagram indexes above.
+- **Spec-driven development**: Phases **1–4** (`specs/1` … `specs/4`) are implemented end-to-end for their scoped deliverables; diagram indexes for Phase 1–2 are linked above.

@@ -2,7 +2,10 @@
 
 import { FormEvent, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import * as THREE from "three";
+import Link from "next/link";
 import { usePathname, useRouter, useSearchParams } from "next/navigation";
+
+import { clearStoredAuth, readStoredAuth } from "./lib/authStorage";
 
 import { AdminBootstrapPanel } from "./components/admin/AdminBootstrapPanel";
 import { AdminCommandCenter } from "./components/admin/AdminCommandCenter";
@@ -14,6 +17,8 @@ import { ToastStack } from "./components/console/ToastStack";
 import { UploadDropzone } from "./components/console/UploadDropzone";
 import ws from "./components/console/workspace.module.css";
 import { WorkspaceSidebar, type WorkspaceTab } from "./components/console/WorkspaceSidebar";
+import { CollaborationThreadPanel } from "./components/console/CollaborationThreadPanel";
+import { TeamCollaborationPanel } from "./components/console/TeamCollaborationPanel";
 import { DocumentCard } from "./components/storage/DocumentCard";
 import { DocumentFilterPills } from "./components/storage/DocumentFilterPills";
 import { DocumentGridSkeleton } from "./components/storage/DocumentGridSkeleton";
@@ -21,6 +26,7 @@ import storageUx from "./components/storage/documentStorage.module.css";
 import { passesSelectedFilters } from "./components/storage/storageFilters";
 import type { StorageFilterId } from "./components/storage/types";
 import { fetchWithRetry } from "./lib/queryResilience";
+import { documentMatchesWorkspaceScope, readWorkspaceScope, type WorkspaceScopeValue } from "./lib/workspaceScope";
 
 const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
 
@@ -88,6 +94,7 @@ type ActivityEntry = {
 type ManagedDocument = {
   document_id: string;
   owner_id: string;
+  workspace_id?: string | null;
   collection_id: string;
   filename: string;
   file_size?: number;
@@ -154,8 +161,7 @@ function RagWorkspace() {
   const [queryUiPhase, setQueryUiPhase] = useState<QueryUiPhase>("idle");
   const [retrieveIntelFault, setRetrieveIntelFault] = useState<string | null>(null);
   const [answerFaultInfo, setAnswerFaultInfo] = useState<AnswerFaultInfo | null>(null);
-  const [email, setEmail] = useState("user@local.dev");
-  const [password, setPassword] = useState("user123");
+  const [email, setEmail] = useState("");
   const [token, setToken] = useState("");
   const [role, setRole] = useState("");
   const [file, setFile] = useState<File | null>(null);
@@ -173,8 +179,14 @@ function RagWorkspace() {
   const [answerLength, setAnswerLength] = useState<"short" | "medium" | "detailed">("medium");
   const [chunks, setChunks] = useState<RetrievalItem[]>([]);
   const [documents, setDocuments] = useState<ManagedDocument[]>([]);
-  const [isLoggingIn, setIsLoggingIn] = useState(false);
-  const [isRegistering, setIsRegistering] = useState(false);
+  const [workspaceScope, setWorkspaceScope] = useState<WorkspaceScopeValue>("");
+  const [collaborationWorkspaces, setCollaborationWorkspaces] = useState<
+    Array<{ workspace_id: string; name: string; my_role?: string }>
+  >([]);
+  const [uploadWorkspaceId, setUploadWorkspaceId] = useState("");
+  const [persistThread, setPersistThread] = useState(true);
+  const [activeThreadId, setActiveThreadId] = useState("");
+  const [threadRefreshNonce, setThreadRefreshNonce] = useState(0);
   const [isLoadingDocs, setIsLoadingDocs] = useState(false);
   const [isUploading, setIsUploading] = useState(false);
   const [isQuerying, setIsQuerying] = useState(false);
@@ -199,14 +211,42 @@ function RagWorkspace() {
   const navigatePanel = useCallback(
     (tab: WorkspaceTab) => {
       setActivePanel(tab);
-      const base = pathname === "/" ? "/" : pathname;
-      const qs = tab === "dashboard" ? "" : `?panel=${encodeURIComponent(tab)}`;
-      router.replace(`${base}${qs}`, { scroll: false });
+      if (tab === "dashboard") {
+        router.replace("/dashboard", { scroll: false });
+        return;
+      }
+      if (tab === "documents") {
+        router.replace("/documents", { scroll: false });
+        return;
+      }
+      if (tab === "query") {
+        router.replace("/query", { scroll: false });
+        return;
+      }
+      if (tab === "admin") {
+        router.replace("/admin", { scroll: false });
+        return;
+      }
+      const qs = `?panel=${encodeURIComponent(tab)}`;
+      router.replace(`/${qs}`, { scroll: false });
     },
-    [router, pathname],
+    [router],
   );
 
   useEffect(() => {
+    if (pathname === "/documents") {
+      setActivePanel("documents");
+      return;
+    }
+    if (pathname === "/query") {
+      setActivePanel("query");
+      return;
+    }
+    if (pathname === "/dashboard") {
+      setActivePanel("dashboard");
+      return;
+    }
+
     const raw = searchParams.get("panel");
     const aliases: Record<string, WorkspaceTab> = {
       dashboard: "dashboard",
@@ -218,14 +258,29 @@ function RagWorkspace() {
       settings: "settings",
     };
     if (!raw) {
-      setActivePanel("dashboard");
+      if (pathname === "/") setActivePanel("dashboard");
       return;
     }
     const tab = aliases[raw];
     if (tab) setActivePanel(tab);
-  }, [searchParams]);
+  }, [pathname, searchParams]);
 
-  const canUpload = useMemo(() => Boolean(file) && !isUploading && Boolean(token), [file, isUploading, token]);
+  const panelFromUrl = searchParams.get("panel");
+  useEffect(() => {
+    const doc = searchParams.get("document")?.trim();
+    const tid = searchParams.get("thread")?.trim();
+    if (doc) {
+      setDocumentId(doc);
+      if (panelFromUrl === "documents") setStorageDetailId(doc);
+    }
+    if (tid) setActiveThreadId(tid);
+  }, [searchParams, panelFromUrl]);
+
+  const canEditDocuments = role === "admin" || role === "user";
+  const canUpload = useMemo(
+    () => Boolean(file) && !isUploading && Boolean(token) && canEditDocuments,
+    [file, isUploading, token, canEditDocuments],
+  );
   const canQuery = useMemo(
     () => Boolean(documentId.trim()) && Boolean(question.trim()) && !isQuerying && Boolean(token),
     [documentId, question, isQuerying, token],
@@ -236,13 +291,24 @@ function RagWorkspace() {
     if (isQuerying) return "Working…";
     return "";
   }, [isQuerying, queryUiPhase]);
+  const filteredDocuments = useMemo(
+    () => documents.filter((d) => documentMatchesWorkspaceScope(d, workspaceScope)),
+    [documents, workspaceScope],
+  );
+
+  const workspaceUploadOptions = useMemo(
+    () =>
+      collaborationWorkspaces.filter((w) => w.my_role === "owner" || w.my_role === "editor"),
+    [collaborationWorkspaces],
+  );
+
   const collectionOptions = useMemo(() => {
     const values = new Set<string>();
-    for (const doc of documents) {
+    for (const doc of filteredDocuments) {
       values.add(doc.collection_id);
     }
     return ["all", ...Array.from(values).sort((a, b) => a.localeCompare(b))];
-  }, [documents]);
+  }, [filteredDocuments]);
   const getEffectiveFileSize = (doc: ManagedDocument) => {
     if (typeof doc.file_size === "number" && Number.isFinite(doc.file_size)) return doc.file_size;
     const activeVersion = doc.active_version ?? 1;
@@ -260,7 +326,7 @@ function RagWorkspace() {
 
   const visibleDocuments = useMemo(() => {
     const keyword = docSearch.trim().toLowerCase();
-    const bySearch = documents.filter((doc) => {
+    const bySearch = filteredDocuments.filter((doc) => {
       if (!keyword) return true;
       return (
         doc.filename.toLowerCase().includes(keyword) ||
@@ -276,7 +342,7 @@ function RagWorkspace() {
       if (sortBy === "collection") return a.collection_id.localeCompare(b.collection_id);
       return a.filename.localeCompare(b.filename);
     });
-  }, [documents, docSearch, collectionFilter, sortBy, selectedStorageFilters]);
+  }, [filteredDocuments, docSearch, collectionFilter, sortBy, selectedStorageFilters]);
 
   const storageGridAnimKey = useMemo(() => {
     const pillPart = [...selectedStorageFilters].sort().join(",");
@@ -413,8 +479,45 @@ function RagWorkspace() {
   }, []);
 
   const handleBootstrapSelfReauth = useCallback(() => {
+    clearStoredAuth();
     setToken("");
     setRole("");
+  }, []);
+
+  useEffect(() => {
+    const a = readStoredAuth();
+    if (a) {
+      setToken(a.token);
+      setRole(a.role);
+      setEmail(a.email);
+    }
+  }, []);
+
+  useEffect(() => {
+    const onAuth = () => {
+      const a = readStoredAuth();
+      if (a) {
+        setToken(a.token);
+        setRole(a.role);
+        setEmail(a.email);
+      } else {
+        setToken("");
+        setRole("");
+      }
+    };
+    window.addEventListener("storage", onAuth);
+    window.addEventListener("rag-auth-changed", onAuth);
+    return () => {
+      window.removeEventListener("storage", onAuth);
+      window.removeEventListener("rag-auth-changed", onAuth);
+    };
+  }, []);
+
+  useEffect(() => {
+    setWorkspaceScope(readWorkspaceScope());
+    const onScope = () => setWorkspaceScope(readWorkspaceScope());
+    window.addEventListener("rag-workspace-scope-changed", onScope);
+    return () => window.removeEventListener("rag-workspace-scope-changed", onScope);
   }, []);
 
   useEffect(() => {
@@ -443,7 +546,31 @@ function RagWorkspace() {
     return headers;
   }, [token]);
 
-  const canEditDocuments = role === "admin" || role === "user";
+  useEffect(() => {
+    if (!token || !backendUrl) {
+      setCollaborationWorkspaces([]);
+      return;
+    }
+    let cancelled = false;
+    void fetch(`${backendUrl}/collaboration/workspaces`, { headers: authHeaders })
+      .then((r) => r.json())
+      .then((data: unknown) => {
+        if (cancelled || !Array.isArray(data)) return;
+        setCollaborationWorkspaces(
+          data.map((row: { workspace_id?: string; name?: string; my_role?: string }) => ({
+            workspace_id: String(row.workspace_id ?? ""),
+            name: String(row.name ?? "Workspace"),
+            my_role: typeof row.my_role === "string" ? row.my_role : undefined,
+          })),
+        );
+      })
+      .catch(() => {
+        if (!cancelled) setCollaborationWorkspaces([]);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, backendUrl, authHeaders]);
 
   const loadDocuments = useCallback(async () => {
     if (!token || !backendUrl) return;
@@ -645,60 +772,9 @@ function RagWorkspace() {
     return `${(size / (1024 * 1024)).toFixed(2)} MB`;
   };
 
-  const handleLogin = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!backendUrl) {
-      setError("NEXT_PUBLIC_BACKEND_URL is not configured.");
-      return;
-    }
-    setIsLoggingIn(true);
-    setError("");
-    try {
-      const response = await fetch(`${backendUrl}/auth/login`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail ?? "Login failed");
-      setToken(data.access_token ?? "");
-      setRole(data.role ?? "");
-      navigatePanel("documents");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Login failed");
-    } finally {
-      setIsLoggingIn(false);
-    }
-  };
-
-  const handleRegister = async () => {
-    if (!backendUrl) {
-      setError("NEXT_PUBLIC_BACKEND_URL is not configured.");
-      return;
-    }
-    setIsRegistering(true);
-    setError("");
-    try {
-      const response = await fetch(`${backendUrl}/auth/register`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ email, password }),
-      });
-      const data = await response.json();
-      if (!response.ok) throw new Error(data.detail ?? "Register failed");
-      setToken(data.access_token ?? "");
-      setRole(data.role ?? "");
-      navigatePanel("documents");
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Register failed");
-    } finally {
-      setIsRegistering(false);
-    }
-  };
-
   const handleUpload = async (event: FormEvent) => {
     event.preventDefault();
-    if (!file || !token) return;
+    if (!file || !token || !canEditDocuments) return;
     if (!backendUrl) {
       setError("NEXT_PUBLIC_BACKEND_URL is not configured.");
       return;
@@ -714,6 +790,7 @@ function RagWorkspace() {
       const formData = new FormData();
       formData.append("file", file);
       formData.append("collection_id", collectionId.trim() || "default");
+      if (uploadWorkspaceId.trim()) formData.append("workspace_id", uploadWorkspaceId.trim());
       const response = await fetch(`${backendUrl}/upload`, {
         method: "POST",
         headers: authHeaders,
@@ -761,6 +838,8 @@ function RagWorkspace() {
         top_k: topK,
         answer_mode: answerMode,
         answer_length: answerLength,
+        persist_thread: persistThread,
+        ...(persistThread && activeThreadId.trim() ? { thread_id: activeThreadId.trim() } : {}),
       });
       const payloadRetrieve = JSON.stringify({ query: question, document_id: documentId.trim(), top_k: topK });
       const sharedRetryOpts = {
@@ -863,6 +942,11 @@ function RagWorkspace() {
             relevance_score: c.relevance_score,
           })),
         });
+
+        if (persistThread && typeof answerData.thread_id === "string" && answerData.thread_id.trim()) {
+          setActiveThreadId(answerData.thread_id.trim());
+          setThreadRefreshNonce((n) => n + 1);
+        }
 
         setError("");
       } else {
@@ -979,39 +1063,76 @@ function RagWorkspace() {
           active={activePanel}
           onNavigate={navigatePanel}
           backendUrl={backendUrl}
-          showAdminNav
+          showAdminNav={role === "admin"}
         >
-          <form onSubmit={handleLogin} style={{ display: "grid", gap: "0.5rem", width: "100%" }}>
-            <input
-              data-testid="email-input"
-              className={ws.inputGlow}
-              value={email}
-              onChange={(e) => setEmail(e.target.value)}
-              placeholder="email"
-              style={{ padding: "0.55rem", borderRadius: 10, border: "1px solid #334155", background: "#0f172a", color: "#e5e7eb" }}
-            />
-            <input
-              data-testid="password-input"
-              className={ws.inputGlow}
-              type="password"
-              value={password}
-              onChange={(e) => setPassword(e.target.value)}
-              placeholder="password"
-              style={{ padding: "0.55rem", borderRadius: 10, border: "1px solid #334155", background: "#0f172a", color: "#e5e7eb" }}
-            />
-            <button data-testid="login-button" type="submit" style={{ padding: "0.6rem", borderRadius: 10, border: "1px solid rgba(99,102,241,0.45)", background: "#4f46e5", color: "white", fontWeight: 700 }}>
-              {isLoggingIn ? "Signing in..." : token ? `Logged (${role})` : "Sign In"}
-            </button>
-            <button
-              data-testid="register-button"
-              type="button"
-              onClick={handleRegister}
-              disabled={isRegistering || isLoggingIn}
-              style={{ padding: "0.6rem", borderRadius: 10, border: "1px solid rgba(34,211,238,0.45)", background: "rgba(6,182,212,0.25)", color: "#cffafe", fontWeight: 700, cursor: "pointer" }}
-            >
-              {isRegistering ? "Registering..." : "Register"}
-            </button>
-          </form>
+          {token && backendUrl ? (
+            <TeamCollaborationPanel backendUrl={backendUrl} authHeaders={authHeaders} pushToast={pushToast} />
+          ) : null}
+          {token ? (
+            <div style={{ display: "grid", gap: "0.45rem", width: "100%", fontSize: "0.78rem" }}>
+              <span style={{ opacity: 0.88, wordBreak: "break-all" }} data-testid="workspace-session-email" title={email}>
+                {email ? `${email} · ${role || "user"}` : `Signed in · ${role || "user"}`}
+              </span>
+              <button
+                type="button"
+                data-testid="workspace-logout-button"
+                onClick={() => {
+                  clearStoredAuth();
+                  setToken("");
+                  setRole("");
+                }}
+                style={{
+                  padding: "0.55rem",
+                  borderRadius: 10,
+                  border: "1px solid rgba(148,163,184,0.35)",
+                  background: "rgba(30,41,59,0.55)",
+                  color: "#e5e7eb",
+                  fontWeight: 700,
+                  cursor: "pointer",
+                  fontSize: "0.82rem",
+                }}
+              >
+                Log out
+              </button>
+            </div>
+          ) : (
+            <div style={{ display: "grid", gap: "0.4rem", width: "100%" }}>
+              <Link
+                href="/login"
+                data-testid="workspace-link-login"
+                style={{
+                  padding: "0.55rem",
+                  borderRadius: 10,
+                  border: "1px solid rgba(99,102,241,0.45)",
+                  background: "#4f46e5",
+                  color: "white",
+                  fontWeight: 700,
+                  textAlign: "center",
+                  textDecoration: "none",
+                  fontSize: "0.82rem",
+                }}
+              >
+                Sign in
+              </Link>
+              <Link
+                href="/register"
+                data-testid="workspace-link-register"
+                style={{
+                  padding: "0.55rem",
+                  borderRadius: 10,
+                  border: "1px solid rgba(34,211,238,0.45)",
+                  background: "rgba(6,182,212,0.25)",
+                  color: "#cffafe",
+                  fontWeight: 700,
+                  textAlign: "center",
+                  textDecoration: "none",
+                  fontSize: "0.82rem",
+                }}
+              >
+                Create account
+              </Link>
+            </div>
+          )}
         </WorkspaceSidebar>
 
         <div className={ws.centerMain}>
@@ -1044,7 +1165,7 @@ function RagWorkspace() {
 
           <div key={activePanel} className={ws.centerStage}>
             {activePanel === "dashboard" ? (
-              <DashboardOverview documentCount={documents.length} lastUploadId={lastUploadId} backendHealthy={backendHealthy} />
+              <DashboardOverview documentCount={filteredDocuments.length} lastUploadId={lastUploadId} backendHealthy={backendHealthy} />
             ) : null}
 
             {activePanel === "admin" ? (
@@ -1081,6 +1202,9 @@ function RagWorkspace() {
                 <UploadDropzone
                   collectionId={collectionId}
                   onCollectionChange={setCollectionId}
+                  uploadWorkspaceId={uploadWorkspaceId}
+                  onUploadWorkspaceChange={setUploadWorkspaceId}
+                  workspaceUploadOptions={workspaceUploadOptions}
                   file={file}
                   onFileChange={setFile}
                   onSubmit={handleUpload}
@@ -1098,7 +1222,7 @@ function RagWorkspace() {
                     {isLoadingDocs ? "Refreshing..." : "Refresh"}
                   </button>
                 </div>
-                <DocumentFilterPills documents={documents} selected={selectedStorageFilters} onToggle={toggleStorageFilter} />
+                <DocumentFilterPills documents={filteredDocuments} selected={selectedStorageFilters} onToggle={toggleStorageFilter} />
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 160px 160px", gap: "0.6rem", marginBottom: "0.55rem" }}>
                   <input
                     data-testid="documents-search-input"
@@ -1130,14 +1254,19 @@ function RagWorkspace() {
                     <option value="size">Sort: File Size</option>
                   </select>
                 </div>
-                {isLoadingDocs && documents.length === 0 ? <DocumentGridSkeleton /> : null}
+                {isLoadingDocs && filteredDocuments.length === 0 ? <DocumentGridSkeleton /> : null}
                 {!isLoadingDocs && documents.length === 0 ? <p data-testid="documents-empty">No documents indexed yet.</p> : null}
-                {documents.length > 0 && visibleDocuments.length === 0 ? (
+                {!isLoadingDocs && documents.length > 0 && filteredDocuments.length === 0 ? (
+                  <p data-testid="documents-scope-empty" style={{ opacity: 0.85 }}>
+                    No documents in the selected workspace scope — switch Library filter in the top bar or upload into this team.
+                  </p>
+                ) : null}
+                {!isLoadingDocs && filteredDocuments.length > 0 && visibleDocuments.length === 0 ? (
                   <p data-testid="documents-filter-empty" style={{ opacity: 0.85 }}>
                     No documents match the current filters and search.
                   </p>
                 ) : null}
-                {documents.length > 0 && visibleDocuments.length > 0 ? (
+                {filteredDocuments.length > 0 && visibleDocuments.length > 0 ? (
                   <div
                     key={storageGridAnimKey}
                     data-testid="documents-list"
@@ -1436,6 +1565,8 @@ function RagWorkspace() {
                 canQuery={canQuery}
                 isQuerying={isQuerying}
                 statusLine={queryStatusLine}
+                persistThread={persistThread}
+                onPersistThreadChange={setPersistThread}
               />
             ) : null}
 
@@ -1480,6 +1611,19 @@ function RagWorkspace() {
             queryPhase={queryUiPhase}
             retrieveFaultNotice={retrieveIntelFault}
             answerFault={answerFaultInfo}
+            collaborationSlot={
+              token && backendUrl ? (
+                <CollaborationThreadPanel
+                  backendUrl={backendUrl}
+                  authHeaders={authHeaders}
+                  documentId={documentId}
+                  activeThreadId={activeThreadId}
+                  onSelectThread={setActiveThreadId}
+                  pushToast={pushToast}
+                  refreshNonce={threadRefreshNonce}
+                />
+              ) : null
+            }
           />
         ) : null}
       </div>

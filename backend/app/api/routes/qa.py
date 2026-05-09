@@ -7,10 +7,13 @@ from app.dependencies import answer_question_use_case
 from app.dependencies import audit_service
 from app.dependencies import document_activity_store
 from app.dependencies import document_repository
+from app.dependencies import notification_store
 from app.dependencies import observability_metrics_store
+from app.dependencies import workspace_store
 from app.request_context import current_request_metrics
 from app.schemas.qa import AnswerRequest, AnswerResponse
 from app.services.answer_usage_recorder import record_answer_document_usage, split_answer_result
+from app.services.notification_emitter import notify_ai_answer, notify_query_failed
 from app.services.observability_metrics_store import finalize_query_metrics_row
 from app.services.rag_pipeline import zero_confidence_payload
 from app.services.retrieval_scope import build_metadata_by_active_indexes, resolve_query_documents
@@ -41,6 +44,15 @@ async def answer_question(
                 "confidence": zero_confidence_payload(),
                 "evidence_spans": [],
             }
+            notify_ai_answer(
+                notification_store=notification_store,
+                document_repository=document_repository,
+                workspace_store=workspace_store,
+                actor_email=str(user["sub"]),
+                document_id=payload.document_id.strip(),
+                thread_id=None,
+                question_preview=payload.question,
+            )
             return AnswerResponse.model_validate(result)
 
         result = await answer_question_use_case.execute(
@@ -65,10 +77,25 @@ async def answer_question(
         )
         row = finalize_query_metrics_row(req_metrics, cleaned, success=True, endpoint="/answer")
         background_tasks.add_task(observability_metrics_store.append_event, row)
+        notify_ai_answer(
+            notification_store=notification_store,
+            document_repository=document_repository,
+            workspace_store=workspace_store,
+            actor_email=str(user["sub"]),
+            document_id=payload.document_id.strip(),
+            thread_id=None,
+            question_preview=payload.question,
+        )
         return AnswerResponse.model_validate(cleaned)
     except ValueError as exc:
         row = finalize_query_metrics_row(req_metrics, None, success=False, failure_detail=str(exc), endpoint="/answer")
         background_tasks.add_task(observability_metrics_store.append_event, row)
+        notify_query_failed(
+            notification_store=notification_store,
+            user_email=str(user["sub"]),
+            document_id=str(payload.document_id).strip(),
+            detail=str(exc),
+        )
         message = str(exc).lower()
         status_code = 404 if "not found" in message else 403 if ("access denied" in message or "deleted" in message) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc

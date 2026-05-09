@@ -19,6 +19,8 @@ class AnswerRequest(BaseModel):
     retrieval_mode: str = Field(default="hybrid")
     answer_mode: AnswerMode = "flexible"
     answer_length: AnswerLength = "medium"
+    persist_thread: bool = False
+    thread_id: str | None = None
 
 
 class SourceCitation(BaseModel):
@@ -60,6 +62,7 @@ class AnswerResponse(BaseModel):
     citations: list[ParagraphCitationBlock]
     confidence: AnswerConfidence
     evidence_spans: list[EvidenceSpan]
+    thread_id: str | None = None
     degraded: bool = False
     degraded_reason: str | None = None
     llm_attempts: int | None = None

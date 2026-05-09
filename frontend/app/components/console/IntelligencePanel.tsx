@@ -1,5 +1,6 @@
 "use client";
 
+import type { ReactNode } from "react";
 import { useMemo, useState } from "react";
 
 import ws from "./workspace.module.css";
@@ -49,6 +50,7 @@ type Props = {
     span_text: string;
   }>;
   answerCitations?: Array<{ paragraph_index: number; citations: Array<{ chunk_id: string; document_id: string }> }>;
+  collaborationSlot?: ReactNode;
 };
 
 function confidenceTone(score: number | undefined | null): string {
@@ -92,6 +94,7 @@ export function IntelligencePanel({
   queryPhase = "idle",
   retrieveFaultNotice = null,
   answerFault = null,
+  collaborationSlot = null,
 }: Props) {
   const [answerExpanded, setAnswerExpanded] = useState(true);
   const answerParagraphs = useMemo(() => answer.split(/\n+/).filter(Boolean), [answer]);
@@ -302,6 +305,10 @@ export function IntelligencePanel({
             </p>
           ) : null}
         </section>
+
+        {collaborationSlot ? (
+          <section style={{ padding: "0.85rem 1rem 1.25rem", borderTop: "1px solid rgba(148,163,184,0.08)" }}>{collaborationSlot}</section>
+        ) : null}
       </div>
     </div>
   );

@@ -4,6 +4,8 @@ from app.application.use_cases.ingest_document import IngestDocumentUseCase
 from app.application.use_cases.retrieve_chunks import RetrieveChunksUseCase
 from app.services.audit_service import AuditService
 from app.services.auth_service import AuthService
+from app.services.collaboration_comment_store import CollaborationCommentStore
+from app.services.collaboration_thread_store import CollaborationThreadStore
 from app.services.document_activity_store import DocumentActivityStore
 from app.services.document_repository import DocumentRepository
 from app.services.document_processing import DocumentProcessingService
@@ -12,6 +14,7 @@ from app.services.error_intelligence_store import ErrorIntelligenceStore
 from app.services.feedback_store import FeedbackStore
 from app.services.learning_signals_store import LearningSignalsStore
 from app.services.llm_service import LLMService
+from app.services.notification_store import NotificationStore
 from app.services.observability_metrics_store import ObservabilityMetricsStore
 from app.services.prompt_builder import PromptBuilder
 from app.services.quota_service import QuotaService
@@ -19,6 +22,7 @@ from app.services.rag_pipeline import RAGPipelineService
 from app.services.retrieval_engine import RetrievalEngine
 from app.services.storage_service import StorageService
 from app.services.vector_store import VectorStore
+from app.services.workspace_store import WorkspaceStore
 
 vector_store = VectorStore()
 document_processing_service = DocumentProcessingService()
@@ -35,11 +39,15 @@ llm_service = LLMService()
 auth_service = AuthService()
 quota_service = QuotaService()
 storage_service = StorageService(STORAGE_PATH)
-document_repository = DocumentRepository(STORAGE_PATH)
+workspace_store = WorkspaceStore(STORAGE_PATH)
+collaboration_thread_store = CollaborationThreadStore(STORAGE_PATH)
+collaboration_comment_store = CollaborationCommentStore(STORAGE_PATH)
+document_repository = DocumentRepository(STORAGE_PATH, workspace_store=workspace_store)
 document_activity_store = DocumentActivityStore(STORAGE_PATH)
 audit_service = AuditService(STORAGE_PATH)
 error_intelligence_store = ErrorIntelligenceStore(STORAGE_PATH)
 observability_metrics_store = ObservabilityMetricsStore(STORAGE_PATH)
+notification_store = NotificationStore(STORAGE_PATH)
 rag_pipeline_service = RAGPipelineService(
     retrieval_engine=retrieval_engine,
     prompt_builder=prompt_builder,

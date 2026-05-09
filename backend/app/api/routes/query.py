@@ -5,12 +5,16 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from app.auth import require_roles
 from app.dependencies import audit_service
 from app.dependencies import answer_question_use_case
+from app.dependencies import collaboration_thread_store
 from app.dependencies import document_activity_store
 from app.dependencies import document_repository
+from app.dependencies import notification_store
 from app.dependencies import observability_metrics_store
+from app.dependencies import workspace_store
 from app.request_context import current_request_metrics
 from app.schemas.qa import AnswerRequest, AnswerResponse
 from app.services.answer_usage_recorder import record_answer_document_usage, split_answer_result
+from app.services.notification_emitter import notify_ai_answer, notify_query_failed
 from app.services.observability_metrics_store import finalize_query_metrics_row
 from app.services.rag_pipeline import zero_confidence_payload
 from app.services.retrieval_scope import build_metadata_by_active_indexes, resolve_query_documents
@@ -18,6 +22,45 @@ from app.services.retrieval_scope import build_metadata_by_active_indexes, resol
 router = APIRouter(tags=["query"])
 
 _QUERY_QUALITY_CONF_THRESHOLD = 0.35
+
+
+def _persist_query_thread(*, user: dict[str, object], payload: AnswerRequest, answer_dict: dict[str, object]) -> str:
+    uid = str(user["sub"])
+    doc_meta = document_repository.get(payload.document_id)
+    if doc_meta is None:
+        raise ValueError("Document not found.")
+    document_repository.assert_access(user=user, document_id=payload.document_id)
+    ws_raw = doc_meta.get("workspace_id")
+    ws_key: str | None = None if ws_raw is None or str(ws_raw).strip() == "" else str(ws_raw).strip()
+    tid_in = (payload.thread_id or "").strip()
+    if tid_in:
+        existing = collaboration_thread_store.get(tid_in)
+        if existing is None:
+            raise ValueError("Thread not found.")
+        if str(existing.get("document_id")) != payload.document_id.strip():
+            raise ValueError("Thread document mismatch.")
+        collaboration_thread_store.append_turn(
+            tid_in,
+            created_by=uid,
+            question=payload.question,
+            answer_payload=answer_dict,
+        )
+        return tid_in
+    row = collaboration_thread_store.create_thread(
+        document_id=payload.document_id.strip(),
+        workspace_id=ws_key,
+        created_by=uid,
+        question=payload.question,
+        answer_payload=answer_dict,
+    )
+    return str(row["thread_id"])
+
+
+def _answer_response_with_thread(base_dict: dict[str, object], thread_id: str | None) -> AnswerResponse:
+    parsed = AnswerResponse.model_validate(base_dict)
+    data = parsed.model_dump()
+    data["thread_id"] = thread_id
+    return AnswerResponse(**data)
 
 
 @router.post("/query", response_model=AnswerResponse)
@@ -47,7 +90,20 @@ async def query(
             }
             row = finalize_query_metrics_row(req_metrics, result, success=True, short_circuit=True, endpoint="/query")
             background_tasks.add_task(observability_metrics_store.append_event, row)
-            return AnswerResponse.model_validate(result)
+            thread_out: str | None = None
+            if payload.persist_thread:
+                thread_out = _persist_query_thread(user=user, payload=payload, answer_dict=result)
+            resp = _answer_response_with_thread(result, thread_out)
+            notify_ai_answer(
+                notification_store=notification_store,
+                document_repository=document_repository,
+                workspace_store=workspace_store,
+                actor_email=str(user["sub"]),
+                document_id=payload.document_id.strip(),
+                thread_id=thread_out,
+                question_preview=payload.question,
+            )
+            return resp
 
         result = await answer_question_use_case.execute(
             question=payload.question,
@@ -107,10 +163,29 @@ async def query(
             )
         row = finalize_query_metrics_row(req_metrics, cleaned, success=True, endpoint="/query")
         background_tasks.add_task(observability_metrics_store.append_event, row)
-        return AnswerResponse.model_validate(cleaned)
+        thread_out = None
+        if payload.persist_thread:
+            thread_out = _persist_query_thread(user=user, payload=payload, answer_dict=cleaned)
+        resp = _answer_response_with_thread(cleaned, thread_out)
+        notify_ai_answer(
+            notification_store=notification_store,
+            document_repository=document_repository,
+            workspace_store=workspace_store,
+            actor_email=str(user["sub"]),
+            document_id=payload.document_id.strip(),
+            thread_id=thread_out,
+            question_preview=payload.question,
+        )
+        return resp
     except ValueError as exc:
         row = finalize_query_metrics_row(req_metrics, None, success=False, failure_detail=str(exc), endpoint="/query")
         background_tasks.add_task(observability_metrics_store.append_event, row)
+        notify_query_failed(
+            notification_store=notification_store,
+            user_email=str(user["sub"]),
+            document_id=str(payload.document_id).strip(),
+            detail=str(exc),
+        )
         message = str(exc).lower()
         status_code = 404 if "not found" in message else 403 if ("access denied" in message or "deleted" in message) else 400
         raise HTTPException(status_code=status_code, detail=str(exc)) from exc

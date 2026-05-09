@@ -3,7 +3,10 @@ import uuid
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Lock
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from app.services.workspace_store import WorkspaceStore
 
 
 _READ_STATUSES = frozenset({"unread", "reading", "completed"})
@@ -12,13 +15,26 @@ _TODO_STATUSES = frozenset({"pending", "done"})
 
 
 class DocumentRepository:
-    def __init__(self, root_path: str) -> None:
+    def __init__(self, root_path: str, workspace_store: "WorkspaceStore | None" = None) -> None:
         self._root = Path(root_path)
         self._root.mkdir(parents=True, exist_ok=True)
         self._metadata_path = self._root / "metadata.json"
         self._lock = Lock()
+        self._workspace_store = workspace_store
         if not self._metadata_path.exists():
             self._metadata_path.write_text("{}", encoding="utf-8")
+
+    def _workspace_member_role(self, workspace_id: str, user_email: str) -> str | None:
+        if self._workspace_store is None:
+            return None
+        return self._workspace_store.member_role(workspace_id.strip(), user_email)
+
+    def _ensure_workspace_id_field(self, doc: dict[str, Any]) -> None:
+        w = doc.get("workspace_id")
+        if w is None or str(w).strip() == "":
+            doc["workspace_id"] = None
+        else:
+            doc["workspace_id"] = str(w).strip()
 
     def _load(self) -> dict[str, dict[str, Any]]:
         data = self._metadata_path.read_text(encoding="utf-8").strip() or "{}"
@@ -35,6 +51,7 @@ class DocumentRepository:
                 normalized_value["tags"] = self._normalize_tags(normalized_value.get("tags"))
                 normalized_value["metadata"] = self._normalize_metadata(normalized_value.get("metadata"))
                 self._normalize_lifecycle(normalized_value)
+                self._ensure_workspace_id_field(normalized_value)
                 normalized[doc_id] = normalized_value
                 continue
             # Backward compatibility for pre-versioning metadata.
@@ -63,6 +80,7 @@ class DocumentRepository:
                 ],
             }
             self._normalize_lifecycle(normalized[doc_id])
+            self._ensure_workspace_id_field(normalized[doc_id])
         return normalized
 
     def _normalize_tags(self, tags: Any) -> list[str]:
@@ -162,6 +180,7 @@ class DocumentRepository:
         file_size: int,
         storage_path: str,
         index_document_id: str,
+        workspace_id: str | None = None,
     ) -> None:
         with self._lock:
             data = self._load()
@@ -175,6 +194,7 @@ class DocumentRepository:
                 "metadata_schema_version": 1,
                 "tags": [],
                 "metadata": {},
+                "workspace_id": None,
                 "versions": [
                     {
                         "version": 1,
@@ -187,6 +207,11 @@ class DocumentRepository:
                 ],
             }
             self._normalize_lifecycle(row)
+            if workspace_id and str(workspace_id).strip():
+                row["workspace_id"] = str(workspace_id).strip()
+            else:
+                row["workspace_id"] = None
+            self._ensure_workspace_id_field(row)
             data[document_id] = row
             self._save(data)
 
@@ -196,31 +221,65 @@ class DocumentRepository:
 
     def list_for_user(self, user: dict[str, object]) -> list[dict[str, Any]]:
         role = str(user.get("role", ""))
-        owner = str(user.get("sub", ""))
+        requester = str(user.get("sub", "")).strip().lower()
         with self._lock:
             data = self._load()
-        docs = list(data.values()) if role == "admin" else [doc for doc in data.values() if str(doc.get("owner_id", "")) == owner]
-        return [doc for doc in docs if not bool(doc.get("is_deleted", False))]
+        all_values = list(data.values())
+        if role == "admin":
+            visible_docs = all_values
+        else:
+            visible_docs = []
+            ws_ids: set[str] = set()
+            if self._workspace_store is not None:
+                ws_ids = self._workspace_store.list_workspace_ids_for_user(requester)
+            for doc in all_values:
+                self._ensure_workspace_id_field(doc)
+                wid = doc.get("workspace_id")
+                if wid is None:
+                    if str(doc.get("owner_id", "")).strip().lower() == requester:
+                        visible_docs.append(doc)
+                else:
+                    wkey = str(wid).strip()
+                    if wkey in ws_ids:
+                        visible_docs.append(doc)
+        return [doc for doc in visible_docs if not bool(doc.get("is_deleted", False))]
 
     def assert_access(self, user: dict[str, object], document_id: str) -> dict[str, Any]:
         doc = self.get(document_id)
         if doc is None:
             raise ValueError("Document not found.")
-        role = str(user.get("role", ""))
-        requester = str(user.get("sub", ""))
-        if role != "admin" and str(doc.get("owner_id", "")) != requester:
-            raise ValueError("Access denied for this document.")
         if bool(doc.get("is_deleted", False)):
             raise ValueError("Document is deleted.")
+        role = str(user.get("role", ""))
+        requester = str(user.get("sub", "")).strip().lower()
+        if role == "admin":
+            self._ensure_workspace_id_field(doc)
+            return doc
+        self._ensure_workspace_id_field(doc)
+        wid = doc.get("workspace_id")
+        if wid is None:
+            if str(doc.get("owner_id", "")).strip().lower() != requester:
+                raise ValueError("Access denied for this document.")
+            return doc
+        ws_role = self._workspace_member_role(str(wid), requester)
+        if ws_role not in ("owner", "editor", "viewer"):
+            raise ValueError("Access denied for this document.")
         return doc
 
     def assert_owner_or_admin(self, user: dict[str, object], document_id: str) -> dict[str, Any]:
-        doc = self.get(document_id)
-        if doc is None:
-            raise ValueError("Document not found.")
+        doc = self.assert_access(user=user, document_id=document_id)
         role = str(user.get("role", ""))
-        requester = str(user.get("sub", ""))
-        if role != "admin" and str(doc.get("owner_id", "")) != requester:
+        requester = str(user.get("sub", "")).strip().lower()
+        if role == "admin":
+            return doc
+        self._ensure_workspace_id_field(doc)
+        wid = doc.get("workspace_id")
+        if wid is None:
+            if str(doc.get("owner_id", "")).strip().lower() != requester:
+                raise ValueError("Access denied for this document.")
+            return doc
+        ws_role = self._workspace_member_role(str(wid), requester)
+        if ws_role not in ("owner", "editor"):
             raise ValueError("Access denied for this document.")
         return doc
 

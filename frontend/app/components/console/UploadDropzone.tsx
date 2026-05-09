@@ -4,9 +4,14 @@ import { FormEvent, useCallback, useState } from "react";
 
 import ws from "./workspace.module.css";
 
+type UploadWorkspaceOption = { workspace_id: string; name: string; my_role?: string };
+
 type Props = {
   collectionId: string;
   onCollectionChange: (v: string) => void;
+  uploadWorkspaceId: string;
+  onUploadWorkspaceChange: (v: string) => void;
+  workspaceUploadOptions: UploadWorkspaceOption[];
   file: File | null;
   onFileChange: (f: File | null) => void;
   onSubmit: (e: FormEvent) => void;
@@ -18,6 +23,9 @@ type Props = {
 export function UploadDropzone({
   collectionId,
   onCollectionChange,
+  uploadWorkspaceId,
+  onUploadWorkspaceChange,
+  workspaceUploadOptions,
   file,
   onFileChange,
   onSubmit,
@@ -58,6 +66,30 @@ export function UploadDropzone({
             color: "#e5e7eb",
           }}
         />
+      </label>
+      <label style={{ fontSize: "0.82rem", display: "grid", gap: "0.35rem" }}>
+        Upload into workspace (optional)
+        <select
+          data-testid="upload-workspace-select"
+          value={uploadWorkspaceId}
+          onChange={(e) => onUploadWorkspaceChange(e.target.value)}
+          className={ws.inputGlow}
+          style={{
+            padding: "0.65rem",
+            borderRadius: 12,
+            border: "1px solid rgba(51,65,85,0.85)",
+            background: "rgba(15,23,42,0.85)",
+            color: "#e5e7eb",
+          }}
+        >
+          <option value="">Personal library (default)</option>
+          {workspaceUploadOptions.map((w) => (
+            <option key={w.workspace_id} value={w.workspace_id}>
+              {w.name}
+              {w.my_role ? ` · ${w.my_role}` : ""}
+            </option>
+          ))}
+        </select>
       </label>
       <div
         role="button"

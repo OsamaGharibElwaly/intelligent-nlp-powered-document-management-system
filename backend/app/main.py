@@ -12,8 +12,10 @@ from starlette.responses import JSONResponse
 from app.api.routes.admin_bootstrap import router as admin_bootstrap_router
 from app.api.routes.audit import router as audit_router
 from app.api.routes.auth import router as auth_router
+from app.api.routes.collaboration import router as collaboration_router
 from app.api.routes.documents import router as documents_router
 from app.api.routes.feedback import router as feedback_router
+from app.api.routes.notifications import router as notifications_router
 from app.api.routes.query import router as query_router
 from app.api.routes.qa import router as qa_router
 from app.api.routes.retrieve import router as retrieve_router
@@ -114,12 +116,14 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth_router)
+app.include_router(collaboration_router)
 app.include_router(admin_bootstrap_router)
 app.include_router(audit_router)
 app.include_router(documents_router)
 app.include_router(upload_router)
 app.include_router(retrieve_router)
 app.include_router(feedback_router)
+app.include_router(notifications_router)
 app.include_router(qa_router)
 app.include_router(query_router)
 

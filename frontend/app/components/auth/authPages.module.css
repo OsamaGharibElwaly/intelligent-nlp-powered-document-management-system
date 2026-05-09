@@ -1,0 +1,96 @@
+.page {
+  min-height: calc(100vh - 3.35rem);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 1.5rem 1rem 2rem;
+  background: radial-gradient(circle at 20% 20%, #111827, #020617 60%);
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  color: #e5e7eb;
+}
+
+.card {
+  width: 100%;
+  max-width: 420px;
+  padding: 1.5rem;
+  border-radius: 16px;
+  background: rgba(15, 23, 42, 0.82);
+  border: 1px solid rgba(148, 163, 184, 0.22);
+  box-shadow: 0 12px 48px rgba(0, 0, 0, 0.35);
+  backdrop-filter: blur(14px);
+}
+
+.title {
+  margin: 0 0 0.35rem;
+  font-size: 1.35rem;
+  letter-spacing: -0.02em;
+}
+
+.sub {
+  margin: 0 0 1.15rem;
+  font-size: 0.86rem;
+  opacity: 0.78;
+  line-height: 1.45;
+}
+
+.field {
+  display: grid;
+  gap: 0.3rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.82rem;
+}
+
+.input {
+  padding: 0.6rem 0.65rem;
+  border-radius: 10px;
+  border: 1px solid #334155;
+  background: #0f172a;
+  color: #e5e7eb;
+  font-size: 0.9rem;
+}
+
+.input:focus {
+  outline: 2px solid rgba(99, 102, 241, 0.45);
+  outline-offset: 0;
+}
+
+.err {
+  margin: 0 0 0.75rem;
+  padding: 0.55rem 0.65rem;
+  border-radius: 10px;
+  background: rgba(127, 29, 29, 0.35);
+  border: 1px solid rgba(248, 113, 113, 0.4);
+  font-size: 0.82rem;
+  color: #fecaca;
+}
+
+.btnPrimary {
+  width: 100%;
+  margin-top: 0.25rem;
+  padding: 0.65rem;
+  border-radius: 10px;
+  border: 1px solid rgba(99, 102, 241, 0.45);
+  background: #4f46e5;
+  color: white;
+  font-weight: 700;
+  font-size: 0.92rem;
+  cursor: pointer;
+  font-family: inherit;
+}
+
+.btnPrimary:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.footer {
+  margin-top: 1rem;
+  font-size: 0.82rem;
+  opacity: 0.78;
+  text-align: center;
+}
+
+.footer a {
+  color: #a5b4fc;
+  font-weight: 600;
+}
