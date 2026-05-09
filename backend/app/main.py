@@ -4,6 +4,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.api.routes.audit import router as audit_router
 from app.api.routes.auth import router as auth_router
 from app.api.routes.documents import router as documents_router
+from app.api.routes.feedback import router as feedback_router
 from app.api.routes.query import router as query_router
 from app.api.routes.qa import router as qa_router
 from app.api.routes.retrieve import router as retrieve_router
@@ -23,6 +24,7 @@ app.include_router(audit_router)
 app.include_router(documents_router)
 app.include_router(upload_router)
 app.include_router(retrieve_router)
+app.include_router(feedback_router)
 app.include_router(qa_router)
 app.include_router(query_router)
 

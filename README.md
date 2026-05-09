@@ -30,15 +30,18 @@ flowchart LR
 ## 2) Architecture (C4 - Containers)
 
 ### Container: Frontend (`frontend/`)
-- UI for file upload, query input, and answer/chunk display.
-- Calls backend endpoints:
+- UI for auth, document management, file upload, query (answer mode / length), retrieval preview, citations, confidence, evidence spans, and thumbs feedback.
+- Calls backend endpoints (authenticated unless noted):
+  - `POST /auth/login`, `POST /auth/register`
   - `POST /upload`
-  - `POST /retrieve`
-  - `POST /query`
+  - `GET/PATCH /documents...` (list, metadata, versions, soft-delete/restore)
+  - `POST /retrieve`, `POST /query`, `POST /answer`
+  - `POST /feedback`
+  - `GET /audit/...` (usage/history where enabled)
 
 ### Container: Backend (`backend/`)
-- FastAPI runtime that orchestrates ingestion, retrieval, and answer generation.
-- Enforces sequence and separation of concerns in the RAG pipeline.
+- FastAPI runtime that orchestrates ingestion, scoped retrieval, grounded answer generation (JSON paragraphs + citations), explainability, audit, and feedback-driven learning signals.
+- Enforces RBAC, quotas, and separation of concerns across the RAG pipeline.
 
 ### Container: Document Processing Service
 - Extracts raw text from `PDF`, `DOCX`, `TXT`.
@@ -54,12 +57,12 @@ flowchart LR
 - Stores metadata mapping (`document_id`, `chunk_id`, `order`, `text`).
 
 ### Container: Retrieval Engine
-- Converts query to embedding.
-- Searches FAISS.
-- Filters by `document_id`, ranks and returns top-K chunks.
+- **Hybrid** retrieval: normalized keyword signals + FAISS vector similarity; optional `keyword` / `vector` modes.
+- Respects **metadata filters** (tags, author, date) and **multi-document** scopes before ranking.
+- Applies **learned** per-chunk deltas and hybrid weight nudges from `learning_signals.json` (updated only via `/feedback`, affecting **future** queries).
 
 ### Container: Groq API (External LLM)
-- Receives grounded prompt and returns final answer.
+- Receives grounded JSON-oriented prompts and returns structured paragraph + citation payloads (`answer_json`).
 - Used only through backend LLM service (no direct frontend call).
 
 ### Container Diagram (Mermaid)
@@ -95,8 +98,8 @@ flowchart LR
 Backend components and responsibilities:
 
 ### API Layer
-- FastAPI routes for upload, retrieval, and query.
-- Validates request/response contracts.
+- FastAPI routes for auth, documents (CRUD-ish + versioning), upload, retrieval, query/answer, feedback, and audit.
+- Validates request/response contracts (including citations, confidence, evidence spans on `/query` and `/answer`).
 
 ### Document Parser
 - File-type parsing:
@@ -117,23 +120,33 @@ Backend components and responsibilities:
 - Maintains vector position -> metadata mapping.
 
 ### Retrieval Engine
-- Runs similarity search.
-- Returns sorted top-K chunk results for a document.
+- Hybrid ranking over scoped chunks; deterministic ordering with tie-breakers.
+- Shared **retrieval scope** resolution for `/retrieve` and `/query` (single doc, optional `document_ids`, filters).
 
 ### Prompt Builder
-- Builds grounded prompt with:
-  - system instruction
-  - retrieved context blocks
-  - user question
-  - fallback instruction for insufficient context
+- Builds grounded prompts with labeled chunk ids, **strict vs flexible** rules, **answer length** hints, and JSON output schema for paragraphs + citations.
 
 ### LLM Service (Groq Integration)
-- Sends prompt to Groq Chat Completions API.
-- Uses deterministic generation params (`temperature=0`, `top_p=1`).
+- Uses Chat Completions with `response_format: json_object` when supported; parses JSON for paragraphs/citations.
+- Deterministic generation params (`temperature=0`, `top_p=1`) where applicable.
 
-Component flow:
+### RAG pipeline & explainability
+- Post-processes citations, **strict verbatim** enforcement, **answer confidence** (support/relevance/agreement), and **evidence spans** (verbatim slices into chunk text).
 
-`API -> Parser -> Chunker -> Embeddings -> FAISS -> Retrieval -> Prompt Builder -> Groq -> API Response`
+### Feedback & learning (Phase 2.4)
+- `FeedbackStore` (`feedback.jsonl`) + `LearningSignalsStore` (`learning_signals.json`); **does not rewrite past answers**.
+
+Component flow (ingestion):
+
+`API → Parser → Chunker → Embeddings → FAISS`
+
+Component flow (question answering):
+
+`API → Retrieval scope → Retrieval Engine → Prompt Builder → Groq (JSON) → RAG post-process (citations / confidence / spans) → API Response`
+
+Optional:
+
+`API → Feedback → Learning signals → affects future Retrieval Engine`
 
 ### Component Diagram (Mermaid)
 
@@ -173,16 +186,54 @@ flowchart LR
 5. Embeddings + metadata are stored in FAISS.
 
 ### Query Flow
-`Question -> Embedding -> Retrieval -> Prompt Builder -> Groq -> Answer`
+`Question → Scope (RBAC + optional multi-doc + filters) → Hybrid retrieval → Prompt (mode + length) → Groq JSON → Citations / confidence / evidence → Answer`
 
-1. User sends question + `document_id`.
-2. Query embedding is generated.
-3. FAISS retrieval returns top-K relevant chunks.
-4. Prompt builder injects context + question.
-5. Groq generates answer from provided context.
-6. System returns grounded answer.
+1. User sends `POST /query` with `question`, anchor `document_id`, optional `document_ids`, optional `filters`, `retrieval_mode`, `answer_mode`, `answer_length`, `top_k`.
+2. Backend resolves allowed logical documents and maps active **index** ids for FAISS chunks.
+3. Retrieval runs **hybrid** (or forced keyword/vector mode), applies learned deltas/weights, returns ranked chunks with `relevance_score` and metadata.
+4. Prompt builder formats all scoped chunks for the LLM and requests JSON paragraphs with citations.
+5. Groq returns structured text; strict mode enforces verbatim alignment where possible.
+6. Response includes **`answer`**, **per-paragraph `citations`**, **`confidence`**, and **`evidence_spans`** (verbatim spans into sources).
+7. Low-confidence or empty answers also emit an audit **`query_quality_issue`** entry (Phase 2.4).
+8. User may send **`POST /feedback`** (snapshots + 👍/👎); persistence updates signals for **subsequent** retrievals only.
 
-## 5) Tech Stack
+---
+
+## 5) Phase 1 — Foundation (`specs/1`)
+
+Phase 1 delivers **secure multi-tenant document operations**, **versioning**, **metadata/tag filtering**, **auditability**, and **deployment readiness**.
+
+| Sub-phase | What was implemented |
+|-----------|-------------------------|
+| **1.1** | JWT auth, roles (`admin` / `user` / `viewer`), quotas, protected routes |
+| **1.2** | Per-owner documents, collections, `STORAGE_PATH` persistence, upload validation |
+| **1.3** | Version stack per document, new uploads as versions, soft delete & restore |
+| **1.4** | Tags + structured metadata, `PATCH` updates, list filtering |
+| **1.5** | Append-only `audit.log`, usage history & admin log views |
+| **1.6** | Render/Vercel-oriented config (`render.yaml`, health/ready, env-driven URLs) |
+
+**Diagrams (Mermaid):** see [`specs/1/DIAGRAMS.md`](specs/1/DIAGRAMS.md).
+
+---
+
+## 6) Phase 2 — AI & Retrieval Intelligence (`specs/2`)
+
+Phase 2 turns retrieval + answering into a **single grounded pipeline** with **explainability** and a **feedback loop**.
+
+| Sub-phase | What was implemented |
+|-----------|-------------------------|
+| **2.1** | Hybrid keyword + vector retrieval; metadata pre-filters; multi-document scope; deterministic ranking; `/retrieve` empty-scope guard |
+| **2.2** | `answer_mode` (`strict` / `flexible`), `answer_length`, JSON paragraphs + citations; `/query` & `/answer` aligned with shared scope resolution |
+| **2.3** | Reproducible **`confidence`** score; **`evidence_spans`** (offsets + verbatim excerpts; sources never mutated) |
+| **2.4** | `POST /feedback`, `feedback.jsonl`; `learning_signals.json` (chunk deltas, hybrid nudges, re-index queue); `query_quality_issue` audit |
+
+**Note:** Answer **confidence** summarizes evidence for that response; **learned signals** from feedback adjust **future** retrieval—not the same request’s ranking.
+
+**Diagrams (Mermaid):** see [`specs/2/DIAGRAMS.md`](specs/2/DIAGRAMS.md).
+
+---
+
+## 7) Tech Stack
 
 - **Backend**: FastAPI, Python
 - **Embeddings**: SentenceTransformers (`all-MiniLM-L6-v2`)
@@ -191,7 +242,7 @@ flowchart LR
 - **Frontend**: Next.js + React + Three.js
 - **Testing**: Pytest
 
-## 6) How to Run
+## 8) How to Run
 
 ### Prerequisites
 - Python 3.11+
@@ -210,6 +261,9 @@ Create `backend/.env`:
 GROQ_API_KEY=your_groq_api_key_here
 GROQ_MODEL=llama-3.1-8b-instant
 GROQ_BASE_URL=https://api.groq.com/openai/v1
+JWT_SECRET=your_long_random_secret
+TOKEN_EXPIRY=60
+STORAGE_PATH=storage
 ```
 
 Run backend:
@@ -239,13 +293,19 @@ NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8000
 
 ```bash
 cd backend
-pytest ../tests/test_phase9_evaluation.py -q
+pytest ../tests -q
 ```
 
-## 7) Key Design Principles
+Focused checks:
+
+```bash
+pytest ../tests/test_phase2_e2e_integration.py ../tests/test_phase9_evaluation.py -q
+```
+
+## 9) Key Design Principles
 
 - **Deterministic behavior**: consistent embeddings/retrieval for same input.
 - **Modular architecture**: isolated services and use-cases.
 - **Grounded responses**: answer generation constrained to retrieved context.
 - **Separation of concerns**: API, processing, retrieval, prompting, LLM separated.
-- **Spec-driven development**: implementation follows phased specs (`specs/1` to `specs/9`).
+- **Spec-driven development**: Phase 1 (`specs/1`) and Phase 2 (`specs/2`) are implemented end-to-end; see diagram indexes above.

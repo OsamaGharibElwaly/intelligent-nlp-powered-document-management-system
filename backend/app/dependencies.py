@@ -7,6 +7,8 @@ from app.services.auth_service import AuthService
 from app.services.document_repository import DocumentRepository
 from app.services.document_processing import DocumentProcessingService
 from app.services.embedding_service import EmbeddingService
+from app.services.feedback_store import FeedbackStore
+from app.services.learning_signals_store import LearningSignalsStore
 from app.services.llm_service import LLMService
 from app.services.prompt_builder import PromptBuilder
 from app.services.quota_service import QuotaService
@@ -18,7 +20,13 @@ from app.services.vector_store import VectorStore
 vector_store = VectorStore()
 document_processing_service = DocumentProcessingService()
 embedding_service = EmbeddingService()
-retrieval_engine = RetrievalEngine(embedding_service=embedding_service, vector_store=vector_store)
+learning_signals_store = LearningSignalsStore(STORAGE_PATH)
+feedback_store = FeedbackStore(STORAGE_PATH)
+retrieval_engine = RetrievalEngine(
+    embedding_service=embedding_service,
+    vector_store=vector_store,
+    learning_signals=learning_signals_store,
+)
 prompt_builder = PromptBuilder()
 llm_service = LLMService()
 auth_service = AuthService()

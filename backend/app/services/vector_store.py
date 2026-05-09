@@ -39,7 +39,12 @@ class VectorStore:
         }
         self._next_position += 1
 
-    async def search(self, embedding: list[float], top_k: int = 5) -> list[dict[str, Any]]:
+    async def search(
+        self,
+        embedding: list[float],
+        top_k: int = 5,
+        document_ids: set[str] | None = None,
+    ) -> list[dict[str, Any]]:
         if self._index is None or self._index.ntotal == 0:
             return []
 
@@ -57,5 +62,20 @@ class VectorStore:
             metadata = self._metadata_by_position.get(int(idx))
             if metadata is None:
                 continue
+            if document_ids is not None and str(metadata.get("document_id", "")) not in document_ids:
+                continue
             results.append({**metadata, "score": float(score)})
         return results
+
+    def list_chunks(self, document_ids: set[str] | None = None) -> list[dict[str, Any]]:
+        items = list(self._metadata_by_position.values())
+        if document_ids is not None:
+            items = [item for item in items if str(item.get("document_id", "")) in document_ids]
+        return sorted(
+            items,
+            key=lambda item: (
+                str(item.get("document_id", "")),
+                int(item.get("order", 0)),
+                str(item.get("chunk_id", "")),
+            ),
+        )

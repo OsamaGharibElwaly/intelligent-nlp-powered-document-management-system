@@ -1,4 +1,5 @@
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -77,19 +78,29 @@ def test_retrieval_known_query_returns_relevant_chunk(client: TestClient) -> Non
     assert retrieve_response.status_code == 200
     results = retrieve_response.json()
     assert len(results) > 0
-    assert any("FAISS stores vectors" in item["text"] for item in results)
+    assert any("FAISS stores vectors" in item["chunk_text"] for item in results)
 
 
 def test_llm_grounding_uses_retrieved_context_only(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     import app.dependencies as deps
     headers = _auth_headers(client)
 
-    async def fake_llm_answer(system_prompt: str, user_prompt: str) -> str:
-        assert "Answer ONLY using provided context" in system_prompt
+    async def fake_answer_json(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        assert "grounded qa system" in system_prompt.lower()
         assert "CONTEXT:" in user_prompt
-        return "FAISS stores vectors."
+        match = re.search(r"\[chunk_id=([^\s]+)\s+document_id=([^\]]+)\]", user_prompt)
+        assert match
+        chunk_id, document_id = match.group(1), match.group(2)
+        return {
+            "paragraphs": [
+                {
+                    "text": "FAISS stores vectors.",
+                    "citations": [{"chunk_id": chunk_id, "document_id": document_id}],
+                }
+            ]
+        }
 
-    monkeypatch.setattr(deps.llm_service, "answer", fake_llm_answer)
+    monkeypatch.setattr(deps.llm_service, "answer_json", fake_answer_json)
 
     upload_response = client.post(
         "/upload",
@@ -104,17 +115,35 @@ def test_llm_grounding_uses_retrieved_context_only(client: TestClient, monkeypat
         json={"question": "Where are vectors stored?", "document_id": document_id, "top_k": 1},
     )
     assert answer_response.status_code == 200
-    assert answer_response.json() == {"answer": "FAISS stores vectors."}
+    body = answer_response.json()
+    assert body["answer"] == "FAISS stores vectors."
+    assert len(body["citations"]) >= 1
+    assert "confidence" in body and "score" in body["confidence"]
+    assert "evidence_spans" in body and isinstance(body["evidence_spans"], list)
 
 
 def test_determinism_and_metrics(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     import app.dependencies as deps
     headers = _auth_headers(client)
 
-    async def deterministic_llm_answer(system_prompt: str, user_prompt: str) -> str:
-        return "Deterministic grounded answer."
+    async def deterministic_answer_json(system_prompt: str, user_prompt: str) -> dict[str, object]:
+        match = re.search(
+            r"\[chunk_id=([^\s]+)\s+document_id=([^\]]+)\]\s*\n(.+?)(?=\n\n\[chunk_id=|\n\nQUESTION:)",
+            user_prompt,
+            re.DOTALL,
+        )
+        assert match
+        chunk_id, document_id, chunk_body = match.group(1), match.group(2), match.group(3).strip()
+        return {
+            "paragraphs": [
+                {
+                    "text": chunk_body,
+                    "citations": [{"chunk_id": chunk_id, "document_id": document_id}],
+                }
+            ]
+        }
 
-    monkeypatch.setattr(deps.llm_service, "answer", deterministic_llm_answer)
+    monkeypatch.setattr(deps.llm_service, "answer_json", deterministic_answer_json)
 
     upload_response = client.post(
         "/upload",
@@ -148,8 +177,8 @@ def test_determinism_and_metrics(client: TestClient, monkeypatch: pytest.MonkeyP
     retrieval_items = retrieval_response.json()
     assert len(retrieval_items) == 1
 
-    retrieval_accuracy = 1.0 if "Deterministic systems produce same output" in retrieval_items[0]["text"] else 0.0
-    context_relevance_score = retrieval_items[0]["score"]
+    retrieval_accuracy = 1.0 if "Deterministic systems produce same output" in retrieval_items[0]["chunk_text"] else 0.0
+    context_relevance_score = retrieval_items[0]["relevance_score"]
 
     assert retrieval_accuracy >= 1.0
     assert elapsed_ms >= 0.0

@@ -5,10 +5,44 @@ import * as THREE from "three";
 
 const backendUrl = process.env.NEXT_PUBLIC_BACKEND_URL ?? "";
 
+type SourceCitation = { chunk_id: string; document_id: string };
+
+type ParagraphCitationBlock = { paragraph_index: number; citations: SourceCitation[] };
+
+type AnswerConfidence = {
+  score: number;
+  formula_version: string;
+  supporting_unique_chunks: number;
+  support_component: number;
+  relevance_component: number;
+  agreement_component: number;
+  relevance_mean_raw: number;
+  max_retrieval_score_raw: number;
+};
+
+type EvidenceSpan = {
+  paragraph_index: number;
+  chunk_id: string;
+  document_id: string;
+  span_start: number;
+  span_end: number;
+  span_text: string;
+};
+
+type FeedbackSnapshotContext = {
+  question: string;
+  document_id: string;
+  answer: string;
+  confidence_score: number | null;
+  retrieved_chunks: { chunk_id: string; relevance_score: number }[];
+};
+
 type RetrievalItem = {
   chunk_id: string;
-  text: string;
-  score: number;
+  document_id: string;
+  chunk_text: string;
+  relevance_score: number;
+  metadata?: Record<string, unknown>;
 };
 
 type ManagedDocument = {
@@ -42,6 +76,13 @@ export default function Home() {
   const [question, setQuestion] = useState("");
   const [topK, setTopK] = useState(3);
   const [answer, setAnswer] = useState("");
+  const [answerCitations, setAnswerCitations] = useState<ParagraphCitationBlock[]>([]);
+  const [answerConfidence, setAnswerConfidence] = useState<AnswerConfidence | null>(null);
+  const [evidenceSpans, setEvidenceSpans] = useState<EvidenceSpan[]>([]);
+  const [feedbackSnapshot, setFeedbackSnapshot] = useState<FeedbackSnapshotContext | null>(null);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const [answerMode, setAnswerMode] = useState<"strict" | "flexible">("flexible");
+  const [answerLength, setAnswerLength] = useState<"short" | "medium" | "detailed">("medium");
   const [chunks, setChunks] = useState<RetrievalItem[]>([]);
   const [documents, setDocuments] = useState<ManagedDocument[]>([]);
   const [isLoggingIn, setIsLoggingIn] = useState(false);
@@ -321,13 +362,20 @@ export default function Home() {
     }
 
     setIsQuerying(true);
+    setFeedbackSnapshot(null);
     setError("");
     try {
       const [answerResponse, retrieveResponse] = await Promise.all([
         fetch(`${backendUrl}/query`, {
           method: "POST",
           headers: { "Content-Type": "application/json", ...authHeaders },
-          body: JSON.stringify({ question, document_id: documentId.trim(), top_k: topK }),
+          body: JSON.stringify({
+            question,
+            document_id: documentId.trim(),
+            top_k: topK,
+            answer_mode: answerMode,
+            answer_length: answerLength,
+          }),
         }),
         fetch(`${backendUrl}/retrieve`, {
           method: "POST",
@@ -341,11 +389,59 @@ export default function Home() {
       if (!retrieveResponse.ok) throw new Error(retrieveData.detail ?? "Retrieve failed");
 
       setAnswer(answerData.answer ?? "");
-      setChunks(Array.isArray(retrieveData) ? retrieveData : []);
+      setAnswerCitations(Array.isArray(answerData.citations) ? answerData.citations : []);
+      setAnswerConfidence(
+        answerData.confidence && typeof answerData.confidence === "object"
+          ? (answerData.confidence as AnswerConfidence)
+          : null,
+      );
+      setEvidenceSpans(Array.isArray(answerData.evidence_spans) ? (answerData.evidence_spans as EvidenceSpan[]) : []);
+      const retrieveList = Array.isArray(retrieveData) ? (retrieveData as RetrievalItem[]) : [];
+      setChunks(retrieveList);
+      const confScore =
+        answerData.confidence && typeof (answerData.confidence as AnswerConfidence).score === "number"
+          ? (answerData.confidence as AnswerConfidence).score
+          : null;
+      setFeedbackSnapshot({
+        question,
+        document_id: documentId.trim(),
+        answer: answerData.answer ?? "",
+        confidence_score: confScore,
+        retrieved_chunks: retrieveList.map((c) => ({
+          chunk_id: c.chunk_id,
+          relevance_score: c.relevance_score,
+        })),
+      });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Query failed");
     } finally {
       setIsQuerying(false);
+    }
+  };
+
+  const submitFeedback = async (sentiment: "positive" | "negative") => {
+    if (!feedbackSnapshot || !token || !backendUrl) return;
+    setFeedbackBusy(true);
+    setError("");
+    try {
+      const response = await fetch(`${backendUrl}/feedback`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", ...authHeaders },
+        body: JSON.stringify({
+          sentiment,
+          query: feedbackSnapshot.question,
+          document_id: feedbackSnapshot.document_id,
+          answer: feedbackSnapshot.answer,
+          confidence_score: feedbackSnapshot.confidence_score ?? undefined,
+          retrieved_chunks: feedbackSnapshot.retrieved_chunks,
+        }),
+      });
+      const data = await response.json();
+      if (!response.ok) throw new Error(typeof data.detail === "string" ? data.detail : "Feedback failed");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Feedback failed");
+    } finally {
+      setFeedbackBusy(false);
     }
   };
 
@@ -542,6 +638,35 @@ export default function Home() {
                 resize: "vertical",
               }}
             />
+            <div style={{ display: "flex", flexWrap: "wrap", gap: "0.65rem", alignItems: "center" }}>
+              <label htmlFor="answer-mode" style={{ fontSize: "0.88rem" }}>
+                Answer mode
+              </label>
+              <select
+                id="answer-mode"
+                data-testid="answer-mode-select"
+                value={answerMode}
+                onChange={(e) => setAnswerMode(e.target.value as "strict" | "flexible")}
+                style={{ background: "#0f172a", border: "1px solid #334155", padding: "0.5rem", borderRadius: 10, color: "#e5e7eb" }}
+              >
+                <option value="flexible">Flexible</option>
+                <option value="strict">Strict</option>
+              </select>
+              <label htmlFor="answer-length" style={{ fontSize: "0.88rem" }}>
+                Length
+              </label>
+              <select
+                id="answer-length"
+                data-testid="answer-length-select"
+                value={answerLength}
+                onChange={(e) => setAnswerLength(e.target.value as "short" | "medium" | "detailed")}
+                style={{ background: "#0f172a", border: "1px solid #334155", padding: "0.5rem", borderRadius: 10, color: "#e5e7eb" }}
+              >
+                <option value="short">Short</option>
+                <option value="medium">Medium</option>
+                <option value="detailed">Detailed</option>
+              </select>
+            </div>
             <div style={{ display: "flex", alignItems: "center", gap: "0.7rem" }}>
               <label htmlFor="topk-field">Top-K</label>
               <input
@@ -696,9 +821,69 @@ export default function Home() {
                   }}
                 >
                   <h2 style={{ marginTop: 0 }}>Answer</h2>
+                  {answerConfidence && (
+                    <p data-testid="confidence-score" style={{ marginTop: 0, marginBottom: "0.45rem", fontSize: "0.92rem", opacity: 0.92 }}>
+                      Confidence: {(answerConfidence.score * 100).toFixed(1)}% ({answerConfidence.supporting_unique_chunks}{" "}
+                      sources · formula {answerConfidence.formula_version})
+                    </p>
+                  )}
                   <p data-testid="answer-output" style={{ marginBottom: 0 }}>
                     {answer || "No answer yet."}
                   </p>
+                  {evidenceSpans.length > 0 && (
+                    <ul data-testid="evidence-spans-list" style={{ marginTop: "0.85rem", paddingLeft: "1.1rem", fontSize: "0.84rem", opacity: 0.9 }}>
+                      {evidenceSpans.map((ev, i) => (
+                        <li key={`${ev.chunk_id}-${ev.span_start}-${i}`} style={{ marginBottom: "0.4rem" }}>
+                          <strong>P{ev.paragraph_index + 1}</strong> · {ev.chunk_id}[{ev.span_start}:{ev.span_end}]: <em>{ev.span_text}</em>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  {answerCitations.length > 0 && (
+                    <ul data-testid="answer-citations" style={{ marginTop: "0.85rem", paddingLeft: "1.1rem", fontSize: "0.88rem", opacity: 0.92 }}>
+                      {answerCitations.map((block) => (
+                        <li key={`p-${block.paragraph_index}`} style={{ marginBottom: "0.35rem" }}>
+                          Paragraph {block.paragraph_index + 1}:{" "}
+                          {block.citations.map((c) => `${c.chunk_id} (${c.document_id})`).join(", ")}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                  <div style={{ marginTop: "0.9rem", display: "flex", gap: "0.45rem", flexWrap: "wrap", alignItems: "center" }}>
+                    <span style={{ fontSize: "0.88rem", opacity: 0.85 }}>Feedback:</span>
+                    <button
+                      data-testid="feedback-positive-button"
+                      type="button"
+                      disabled={!feedbackSnapshot || feedbackBusy}
+                      onClick={() => void submitFeedback("positive")}
+                      style={{
+                        padding: "0.45rem 0.65rem",
+                        borderRadius: 8,
+                        border: "1px solid rgba(52,211,153,0.45)",
+                        background: feedbackSnapshot ? "rgba(16,185,129,0.2)" : "rgba(30,41,59,0.5)",
+                        color: "#d1fae5",
+                        cursor: feedbackSnapshot ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      {feedbackBusy ? "…" : "👍 Helpful"}
+                    </button>
+                    <button
+                      data-testid="feedback-negative-button"
+                      type="button"
+                      disabled={!feedbackSnapshot || feedbackBusy}
+                      onClick={() => void submitFeedback("negative")}
+                      style={{
+                        padding: "0.45rem 0.65rem",
+                        borderRadius: 8,
+                        border: "1px solid rgba(248,113,113,0.45)",
+                        background: feedbackSnapshot ? "rgba(239,68,68,0.18)" : "rgba(30,41,59,0.5)",
+                        color: "#fecaca",
+                        cursor: feedbackSnapshot ? "pointer" : "not-allowed",
+                      }}
+                    >
+                      {feedbackBusy ? "…" : "👎 Not helpful"}
+                    </button>
+                  </div>
                 </div>
 
                 <div
@@ -717,7 +902,7 @@ export default function Home() {
                     <ul data-testid="chunks-list" style={{ margin: 0, paddingLeft: "1.25rem" }}>
                       {chunks.map((chunk) => (
                         <li key={chunk.chunk_id} style={{ marginBottom: "0.65rem" }}>
-                          <strong>{chunk.chunk_id}</strong> ({chunk.score.toFixed(4)}): {chunk.text}
+                          <strong>{chunk.chunk_id}</strong> ({chunk.relevance_score.toFixed(4)}): {chunk.chunk_text}
                         </li>
                       ))}
                     </ul>
