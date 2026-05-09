@@ -3,6 +3,7 @@ from typing import Any
 
 from app.services.embedding_service import EmbeddingService
 from app.services.learning_signals_store import LearningSignalsStore
+from app.services.retrieval_storage_bias import storage_retrieval_multiplier
 from app.services.vector_store import VectorStore
 
 
@@ -43,7 +44,7 @@ class RetrievalEngine:
         top_k: int = 5,
         retrieval_mode: str = "hybrid",
         metadata_by_index_document_id: dict[str, dict[str, object]] | None = None,
-    ) -> list[dict[str, object]]:
+    ) -> tuple[list[dict[str, object]], dict[str, Any]]:
         requested_mode = retrieval_mode.strip().lower()
         if requested_mode not in {"hybrid", "keyword", "vector"}:
             raise ValueError("Invalid retrieval mode. Allowed: hybrid, keyword, vector.")
@@ -56,18 +57,28 @@ class RetrievalEngine:
 
         chunks = self.vector_store.list_chunks(document_ids=target_document_ids)
         if not chunks:
-            return []
+            return [], {"embedding_skipped": False, "vector_unavailable": False}
+
+        retrieval_flags: dict[str, Any] = {"embedding_skipped": False, "vector_unavailable": False}
 
         query_embedding: list[float] | None = None
         vector_scores: dict[str, float] = {}
         if requested_mode in {"hybrid", "vector"}:
-            query_embedding = await self.embedding_service.embed_text(query)
-            semantic_results = await self.vector_store.search(
-                embedding=query_embedding,
-                top_k=max(top_k * 10, 50),
-                document_ids=target_document_ids,
-            )
-            vector_scores = {str(item["chunk_id"]): float(item.get("score", 0.0)) for item in semantic_results}
+            try:
+                query_embedding = await self.embedding_service.embed_text(query)
+                semantic_results = await self.vector_store.search(
+                    embedding=query_embedding,
+                    top_k=max(top_k * 10, 50),
+                    document_ids=target_document_ids,
+                )
+                vector_scores = {str(item["chunk_id"]): float(item.get("score", 0.0)) for item in semantic_results}
+            except Exception:
+                retrieval_flags["embedding_skipped"] = True
+                vector_scores = {}
+                query_embedding = None
+                if requested_mode == "vector":
+                    retrieval_flags["vector_unavailable"] = True
+                    return [], retrieval_flags
 
         keyword_scores_raw: dict[str, float] = {}
         exact_match_by_chunk: dict[str, bool] = {}
@@ -102,7 +113,8 @@ class RetrievalEngine:
                 relevance = (kw_w * keyword_score) + (vec_w * vector_score)
 
             delta = self._learning.get_chunk_delta(chunk_id) if self._learning is not None else 0.0
-            relevance_adjusted = float(relevance) + float(delta)
+            storage_mult = storage_retrieval_multiplier(doc_metadata)
+            relevance_adjusted = (float(relevance) + float(delta)) * storage_mult
 
             ranked.append(
                 {
@@ -115,6 +127,7 @@ class RetrievalEngine:
                         "tags": doc_metadata.get("tags", []),
                         "date": doc_metadata.get("date"),
                         "author": doc_metadata.get("author"),
+                        "storage_bias_multiplier": storage_mult,
                     },
                     "_exact": has_exact_keyword,
                     "_keyword_raw": keyword_scores_raw.get(chunk_id, 0.0),
@@ -141,13 +154,16 @@ class RetrievalEngine:
 
         cleaned: list[dict[str, object]] = []
         for item in ranked[:top_k]:
+            md = dict(item["metadata"])
+            if retrieval_flags.get("embedding_skipped"):
+                md = {**md, "keyword_only_fallback": True}
             cleaned.append(
                 {
                     "chunk_id": str(item["chunk_id"]),
                     "document_id": str(item["document_id"]),
                     "chunk_text": str(item["chunk_text"]),
                     "relevance_score": float(item["relevance_score"]),
-                    "metadata": dict(item["metadata"]),
+                    "metadata": md,
                 }
             )
-        return cleaned
+        return cleaned, retrieval_flags

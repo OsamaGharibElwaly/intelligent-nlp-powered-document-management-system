@@ -302,6 +302,38 @@ Focused checks:
 pytest ../tests/test_phase2_e2e_integration.py ../tests/test_phase9_evaluation.py -q
 ```
 
+## 🧭 Future Enhancements
+
+### 🔐 Authentication & Role Management
+- [ ] Improve Login/Register UI with modern UX (validation, animations, error states)
+- [ ] Add full Role-Based Access Control (RBAC)
+- [ ] Replace dev bootstrap system with secure admin invitation flow
+- [ ] Add password reset and email verification (optional)
+
+---
+
+### 🧑‍💼 Admin System
+- [ ] Admin Assigning Panel (Bootstrap admin creation via secret key)
+- [ ] Admin-only routes protection middleware
+- [ ] Admin activity audit logs
+- [ ] Admin user management dashboard (view / promote / deactivate users)
+
+---
+
+### 📊 System Monitoring (Phase 3 UX)
+- [ ] Real-time analytics dashboard (queries, storage, token usage)
+- [ ] System health indicators (latency, failures, uptime)
+- [ ] Live activity feed (queries, uploads, AI responses)
+- [ ] Error monitoring and classification panel
+
+---
+
+### 🎨 UX Enhancements
+- [ ] Fully responsive SaaS-style dashboard redesign
+- [ ] Improved navigation system (Admin / User separation)
+- [ ] Advanced loading skeletons and micro-interactions
+- [ ] Dark mode support (optional)
+
 ## 9) Key Design Principles
 
 - **Deterministic behavior**: consistent embeddings/retrieval for same input.

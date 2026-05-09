@@ -60,3 +60,7 @@ class AnswerResponse(BaseModel):
     citations: list[ParagraphCitationBlock]
     confidence: AnswerConfidence
     evidence_spans: list[EvidenceSpan]
+    degraded: bool = False
+    degraded_reason: str | None = None
+    llm_attempts: int | None = None
+    retrieval_degraded: bool = False

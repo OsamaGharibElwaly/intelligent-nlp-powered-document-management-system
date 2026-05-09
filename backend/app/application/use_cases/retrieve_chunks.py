@@ -13,10 +13,11 @@ class RetrieveChunksUseCase:
         retrieval_mode: str = "hybrid",
         metadata_by_index_document_id: dict[str, dict[str, object]] | None = None,
     ) -> list[dict[str, object]]:
-        return await self.retrieval_engine.retrieve(
+        rows, _flags = await self.retrieval_engine.retrieve(
             query=query,
             document_id=document_id,
             top_k=top_k,
             retrieval_mode=retrieval_mode,
             metadata_by_index_document_id=metadata_by_index_document_id,
         )
+        return rows

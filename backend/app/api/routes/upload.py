@@ -4,6 +4,7 @@ from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
 
 from app.auth import require_roles
 from app.dependencies import audit_service
+from app.dependencies import document_activity_store
 from app.dependencies import document_repository
 from app.dependencies import ingest_document_use_case
 from app.dependencies import quota_service
@@ -34,11 +35,24 @@ async def upload_document(
             storage_path=file_path,
             index_document_id=result["document_id"],
         )
+        did = result["document_id"]
+        document_activity_store.append(
+            document_id=did,
+            activity_type="uploaded",
+            user_id=str(user["sub"]),
+            details={"filename": file.filename or "document", "collection_id": collection_id.strip() or "default"},
+        )
+        document_activity_store.append(
+            document_id=did,
+            activity_type="reindexed",
+            user_id=str(user["sub"]),
+            details={"version": 1, "index_document_id": did},
+        )
         audit_service.log_event(
             action="document_upload",
             user_id=str(user["sub"]),
             role=str(user.get("role", "")),
-            document_id=result["document_id"],
+            document_id=did,
             details={"filename": file.filename or "document", "collection_id": collection_id.strip() or "default"},
         )
         quota_service.record_upload(user=user, file_size=len(content))

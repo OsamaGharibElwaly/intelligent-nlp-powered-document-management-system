@@ -59,3 +59,37 @@ def test_audit_logs_and_usage_history_are_recorded() -> None:
     assert "document_upload" in actions
     assert "query" in actions
     assert "document_access" in actions
+
+
+def test_audit_observability_metrics_requires_admin_and_summarizes() -> None:
+    client = TestClient(app)
+    user_headers = _login(client, "user@local.dev", "user123")
+    admin_headers = _login(client, "admin@local.dev", "admin123")
+
+    denied = client.get("/audit/metrics/summary", headers=user_headers, params={"range": "24h"})
+    assert denied.status_code == 403
+
+    ok = client.get("/audit/metrics/summary", headers=admin_headers, params={"range": "24h"})
+    assert ok.status_code == 200
+    payload = ok.json()
+    assert payload["range"] == "24h"
+    assert "buckets" in payload and "totals" in payload
+    assert "alert_thresholds" in payload
+
+    csv_export = client.get("/audit/metrics/export", headers=admin_headers, params={"range": "24h", "format": "csv"})
+    assert csv_export.status_code == 200
+    assert "timestamp" in csv_export.text
+
+
+def test_audit_error_events_requires_admin_and_returns_list() -> None:
+    client = TestClient(app)
+    user_headers = _login(client, "user@local.dev", "user123")
+    admin_headers = _login(client, "admin@local.dev", "admin123")
+
+    denied = client.get("/audit/error-events", headers=user_headers)
+    assert denied.status_code == 403
+
+    ok = client.get("/audit/error-events", headers=admin_headers, params={"limit": 10})
+    assert ok.status_code == 200
+    rows = ok.json()
+    assert isinstance(rows, list)

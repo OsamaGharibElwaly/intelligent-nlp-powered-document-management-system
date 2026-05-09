@@ -37,6 +37,10 @@ def build_metadata_by_active_indexes(
             "tags": list(doc.get("tags", [])),
             "date": doc_metadata.get("date"),
             "author": doc_metadata.get("author"),
+            "read_status": doc.get("read_status"),
+            "archived": bool(doc.get("archived", False)),
+            "priority": doc.get("priority"),
+            "reading_progress": doc.get("reading_progress"),
         }
     return metadata_by_index_document_id
 

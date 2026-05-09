@@ -168,3 +168,25 @@ class AuthService:
             return decoded
         except jwt.InvalidTokenError as exc:
             raise ValueError("Invalid or expired token.") from exc
+
+    def promote_to_admin_role(self, target_email: str) -> UserRecord:
+        """Set role to admin for an existing user (persisted to disk)."""
+        if not JWT_SECRET:
+            raise ValueError("JWT_SECRET is not configured.")
+        normalized = target_email.lower().strip()
+        if not normalized:
+            raise ValueError("Invalid email.")
+        with self._lock:
+            user = self._users.get(normalized)
+            if user is None:
+                raise ValueError("User not found.")
+            updated = UserRecord(
+                email=user.email,
+                role="admin",
+                document_quota=user.document_quota,
+                storage_quota_bytes=user.storage_quota_bytes,
+                password_hash=user.password_hash,
+            )
+            self._users[normalized] = updated
+            self._persist_users()
+            return updated
